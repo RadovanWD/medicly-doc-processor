@@ -1,0 +1,15 @@
+{
+  "name": "medicly-doc-processor",
+  "version": "1.0.0",
+  "description": "Processes DOCX files and saves them to a PostgreSQL database.",
+  "main": "process-docs.js",
+  "type": "module",
+  "scripts": {
+    "start": "node process-docs.js"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "mammoth": "^1.7.2",
+    "pg": "^8.11.5"
+  }
+}
