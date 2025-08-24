@@ -2,10 +2,11 @@ import mammoth from 'mammoth';
 
 /**
  * A robust, single-pass parser to extract all data from the raw text.
+ * This is the final, most flexible version.
  * @param {string} rawText - The full raw text from the .docx file.
  * @returns {object} A structured object with all extracted data.
  */
-function flexibleParser(rawText) {
+function finalParser(rawText) {
   const data = {
     title: null,
     author: null,
@@ -25,7 +26,7 @@ function flexibleParser(rawText) {
     keywords: /^Primary Keywords:/i,
     author: /^By Dr\./i,
     reviewed: /^Medically reviewed/i,
-    seoBlockStart: /^(SEO & Meta Details|Blog Post:|Meta Data)/i,
+    seoBlockStart: /^(SEO & Meta Details|Blog Post:|Meta Data|1\. Meta Data)/i,
   };
 
   for (const line of lines) {
@@ -98,7 +99,7 @@ export async function processDocxFile(filePath) {
   const rawTextResult = await mammoth.extractRawText({ path: filePath });
   const rawText = rawTextResult.value;
 
-  const metadata = flexibleParser(rawText);
+  const metadata = finalParser(rawText);
   const { title } = metadata;
 
   const htmlResult = await mammoth.convertToHtml({ path: filePath });
@@ -114,7 +115,7 @@ export async function processDocxFile(filePath) {
   }
 
   // Find end of content (before SEO block)
-  const seoBlockMarkers = ['Meta Title:', 'SEO & Meta Details', 'Blog Post:'];
+  const seoBlockMarkers = ['Meta Title:', 'SEO & Meta Details', 'Blog Post:', '1. Meta Data'];
   let contentEndIndex = -1;
 
   for (const marker of seoBlockMarkers) {
