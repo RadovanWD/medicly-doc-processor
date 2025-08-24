@@ -1,145 +1,148 @@
 import mammoth from 'mammoth';
 
 /**
- * A robust, single-pass parser to extract all data from the raw text.
- * This is the final, most flexible version.
- * @param {string} rawText - The full raw text from the .docx file.
- * @returns {object} A structured object with all extracted data.
+ * Extracts structured data from the raw text of a .docx file.
+ *
+ * @param {string} rawText - The full raw text from the document.
+ * @param {string} filePath - The path to the file being processed, for error logging.
+ * @returns {{metadata: object, content: string}} An object containing the extracted metadata and the main article content.
  */
-function finalParser(rawText) {
-  const data = {
-    title: null,
-    author: null,
-    slug: null,
-    metaTitle: null,
-    metaDescription: null,
-    keywords: null,
-  };
-  const lines = rawText.split('\n');
-  let descriptionLines = [];
-  let isParsingDescription = false;
+function extractData(rawText, filePath) {
+  const lines = rawText.split('\n').filter(line => line.trim() !== '');
+  const metadata = {};
+  let contentLines = [];
+  let seoBlockStartIndex = -1;
 
-  const patterns = {
-    slug: /^(Slug|Slugx|URL Slug|Suggested URL Slug):/i,
-    metaTitle: /^(Meta Title|Optimized Meta Title):/i,
-    metaDescription: /^(Meta Description|Compelling Meta Description):/i,
-    keywords: /^Primary Keywords:/i,
-    author: /^By Dr\./i,
-    reviewed: /^Medically reviewed/i,
-    seoBlockStart: /^(SEO & Meta Details|Blog Post:|Meta Data|1\. Meta Data)/i,
-  };
+  // Find the SEO block first to determine the content boundary
+  const seoMarkers = /^(SEO & Meta Details|Blog Post:|Meta Data|1\. Meta Data|Meta Title:|Slug:|URL Slug:)/i;
+  seoBlockStartIndex = lines.findIndex(line => seoMarkers.test(line));
 
-  for (const line of lines) {
-    const trimmedLine = line.trim();
-    if (!trimmedLine) continue;
-
-    if (patterns.slug.test(trimmedLine)) {
-      isParsingDescription = false;
-      data.slug = trimmedLine.replace(patterns.slug, '').trim();
-    } else if (patterns.metaTitle.test(trimmedLine)) {
-      isParsingDescription = false;
-      data.metaTitle = trimmedLine.replace(patterns.metaTitle, '').trim();
-    } else if (patterns.metaDescription.test(trimmedLine)) {
-      isParsingDescription = true;
-      descriptionLines = [trimmedLine.replace(patterns.metaDescription, '').trim()];
-    } else if (patterns.keywords.test(trimmedLine)) {
-      isParsingDescription = false;
-      data.keywords = trimmedLine.replace(patterns.keywords, '').trim();
-    } else if (patterns.author.test(trimmedLine)) {
-      data.author = trimmedLine;
-    } else if (isParsingDescription) {
-      descriptionLines.push(trimmedLine);
-    } else if (
-      !data.title &&
-      !patterns.author.test(trimmedLine) &&
-      !patterns.reviewed.test(trimmedLine) &&
-      !patterns.seoBlockStart.test(trimmedLine) &&
-      trimmedLine.length > 20 &&
-      !trimmedLine.includes(':')
-    ) {
-      data.title = trimmedLine;
+  // 1. Extract Title, Author, and pre-SEO content
+  let titleFound = false;
+  for (let i = 0; i < (seoBlockStartIndex === -1 ? lines.length : seoBlockStartIndex); i++) {
+    const line = lines[i].trim();
+    if (/^By Dr\./i.test(line)) {
+      metadata.author = line;
+    } else if (!titleFound && line.length > 20 && !line.includes('Medically reviewed')) {
+      metadata.title = line;
+      titleFound = true;
+    } else if (titleFound) {
+      contentLines.push(lines[i]); // Use original line to preserve formatting
     }
   }
 
-  if (descriptionLines.length > 0) {
-    data.metaDescription = descriptionLines.join(' ').trim();
+  // 2. Extract SEO metadata
+  if (seoBlockStartIndex !== -1) {
+    const seoLines = lines.slice(seoBlockStartIndex);
+    let descriptionLines = [];
+    let isParsingDescription = false;
+
+    const seoPatterns = {
+      slug: /^(Slug|Slugx|URL Slug|Suggested URL Slug):/i,
+      metaTitle: /^(Meta Title|Optimized Meta Title):/i,
+      metaDescription: /^(Meta Description|Compelling Meta Description):/i,
+      keywords: /^Primary Keywords:/i,
+    };
+
+    seoLines.forEach(line => {
+      const trimmedLine = line.trim();
+      if (seoPatterns.slug.test(trimmedLine)) {
+        isParsingDescription = false;
+        metadata.slug = trimmedLine.replace(seoPatterns.slug, '').trim();
+      } else if (seoPatterns.metaTitle.test(trimmedLine)) {
+        isParsingDescription = false;
+        metadata.metaTitle = trimmedLine.replace(seoPatterns.metaTitle, '').trim();
+      } else if (seoPatterns.metaDescription.test(trimmedLine)) {
+        isParsingDescription = true;
+        descriptionLines.push(trimmedLine.replace(seoPatterns.metaDescription, '').trim());
+      } else if (seoPatterns.keywords.test(trimmedLine)) {
+        isParsingDescription = false;
+        metadata.keywords = trimmedLine.replace(seoPatterns.keywords, '').trim();
+      } else if (isParsingDescription) {
+        descriptionLines.push(trimmedLine);
+      }
+    });
+
+    if (descriptionLines.length > 0) {
+      metadata.metaDescription = descriptionLines.join(' ').trim();
+    }
   }
 
-  if (!data.slug || !data.metaTitle) {
-    throw new Error(
-      `Failed to find required SEO fields. Found Slug: '${data.slug}', Meta Title: '${data.metaTitle}'. Check the document.`,
-    );
+  // 3. Final validation
+  if (!metadata.title) {
+    throw new Error(`Title could not be determined for file: ${filePath}`);
   }
-  if (!data.title) {
-    throw new Error('Failed to find a suitable title for the document.');
+  if (!metadata.slug) {
+    throw new Error(`Slug could not be found for file: ${filePath}`);
+  }
+  if (!metadata.metaTitle) {
+    throw new Error(`Meta Title could not be found for file: ${filePath}`);
   }
 
-  return data;
+  const content = contentLines.join('\n');
+  return { metadata, content };
 }
 
-function postProcessHtml(html) {
-  let processedHtml = html;
-  const internalLinks = [
-    { text: /online prescription/gi, url: 'https://medicly.com.au/prescriptions' },
-    { text: /doctor consultation/gi, url: 'https://medicly.com.au/doctor-consultation' },
-    { text: /online doctor consultation/gi, url: 'https://medicly.com.au/doctor-consultation' },
-    { text: /certificates/gi, url: 'https://medicly.com.au/certificates' },
-  ];
 
-  internalLinks.forEach(link => {
-    const regex = new RegExp(`(?<!<a[^>]*>)(${link.text.source})(?!<\\/a>)`, 'gi');
-    processedHtml = processedHtml.replace(regex, `<a href="${link.url}">$1</a>`);
+/**
+ * Converts the extracted text content to HTML and applies post-processing.
+ *
+ * @param {string} content - The raw text content of the article.
+ * @returns {Promise<string>} The processed HTML string.
+ */
+async function generateAndProcessHtml(content) {
+  // Use mammoth to convert the raw text content to HTML
+  const htmlResult = await mammoth.convert({
+    array: Buffer.from(content)
+  }, {
+    styleMap: [
+      "p[style-name='heading 1'] => h1:fresh",
+      "p[style-name='heading 2'] => h2:fresh",
+      "p[style-name='heading 3'] => h3:fresh",
+      "p[style-name='heading 4'] => h4:fresh",
+    ]
   });
 
-  processedHtml = processedHtml.replace(/(<p><strong><a href="[^"]*")>/g, '$1 class="blog_cta">');
+  let processedHtml = htmlResult.value;
+
+  // Define internal links and their URLs
+  const internalLinks = [
+    { phrases: ['online prescription', 'online prescriptions'], url: 'https://medicly.com.au/prescriptions' },
+    { phrases: ['doctor consultation', 'online doctor consultation'], url: 'https://medicly.com.au/doctor-consultation' },
+    { phrases: ['certificates'], url: 'https://medicly.com.au/certificates' },
+    // Add more links as needed
+  ];
+
+  // Wrap phrases with hyperlinks
+  internalLinks.forEach(link => {
+    link.phrases.forEach(phrase => {
+      // Use a regex that avoids replacing text already inside an <a> tag
+      const regex = new RegExp(`(?<!<a[^>]*>)${phrase}(?!<\/a>)`, 'gi');
+      processedHtml = processedHtml.replace(regex, `<a href=\"${link.url}\">${phrase}</a>`);
+    });
+  });
+
+  // Add class="blog_cta" to specific call-to-action links
+  processedHtml = processedHtml.replace(
+    /(<a href=\"https:\/\/medicly.com.au\/[^\"]*\")>/g,
+    '$1 class=\"blog_cta\">'
+  );
+
   return processedHtml;
 }
+
 
 export async function processDocxFile(filePath) {
   const rawTextResult = await mammoth.extractRawText({ path: filePath });
   const rawText = rawTextResult.value;
 
-  const metadata = finalParser(rawText);
-  const { title } = metadata;
+  // Extract metadata and content from the raw text
+  const { metadata, content } = extractData(rawText, filePath);
 
-  const htmlResult = await mammoth.convertToHtml({ path: filePath });
-  let html = htmlResult.value;
+  // Generate and process the HTML from the extracted content
+  const processedContent = await generateAndProcessHtml(content);
 
-  // Find start of content (after title)
-  let contentStartIndex = html.indexOf(title);
-  if (contentStartIndex !== -1) {
-    const endOfTitleTag = html.indexOf('>', contentStartIndex);
-    if (endOfTitleTag !== -1) contentStartIndex = endOfTitleTag + 1;
-  } else {
-    throw new Error('Could not find title in HTML to determine content start.');
-  }
-
-  // Find end of content (before SEO block)
-  const seoBlockMarkers = ['Meta Title:', 'SEO & Meta Details', 'Blog Post:', '1. Meta Data'];
-  let contentEndIndex = -1;
-
-  for (const marker of seoBlockMarkers) {
-    const markerIndex = html.lastIndexOf(marker);
-    if (markerIndex > contentStartIndex) {
-      contentEndIndex = markerIndex;
-      break;
-    }
-  }
-
-  if (contentEndIndex !== -1) {
-    const openingTagIndex = html.lastIndexOf('<', contentEndIndex);
-    if (openingTagIndex !== -1) {
-      html = html.substring(0, openingTagIndex);
-    }
-  }
-
-  let content = html.substring(contentStartIndex).trim();
-
-  if (!content) {
-    throw new Error('Could not extract the main content from the document.');
-  }
-
-  const processedContent = postProcessHtml(content);
-
+  // Return the complete, structured data
   return { ...metadata, content: processedContent };
 }
+
