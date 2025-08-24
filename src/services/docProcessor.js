@@ -1,101 +1,79 @@
 import mammoth from 'mammoth';
 
 /**
- * Parses data from the top of the document (Author, Title).
+ * A robust, single-pass parser to extract all data from the raw text.
+ * @param {string} rawText - The full raw text from the .docx file.
+ * @returns {object} A structured object with all extracted data.
  */
-function parseTopMatter(rawText) {
-  const topMatter = {};
+function flexibleParser(rawText) {
+  const data = {
+    title: null,
+    author: null,
+    slug: null,
+    metaTitle: null,
+    metaDescription: null,
+    keywords: null,
+  };
   const lines = rawText.split('\n');
-  const nonTitlePatterns = [/^By Dr\. Gurbakhshish/i, /^Medically reviewed/i];
+  let descriptionLines = [];
+  let isParsingDescription = false;
+
+  const patterns = {
+    slug: /^(Slug|Slugx|URL Slug|Suggested URL Slug):/i,
+    metaTitle: /^(Meta Title|Optimized Meta Title):/i,
+    metaDescription: /^(Meta Description|Compelling Meta Description):/i,
+    keywords: /^Primary Keywords:/i,
+    author: /^By Dr\./i,
+    reviewed: /^Medically reviewed/i,
+    seoBlockStart: /^(SEO & Meta Details|Blog Post:|Meta Data)/i,
+  };
 
   for (const line of lines) {
     const trimmedLine = line.trim();
     if (!trimmedLine) continue;
-    const isNonTitle = nonTitlePatterns.some(pattern => pattern.test(trimmedLine));
-    if (!isNonTitle) {
-      // A simple check to avoid picking up a short, irrelevant line as the title.
-      if (trimmedLine.length > 15) {
-        topMatter.title = trimmedLine;
-        break;
-      }
-    }
-  }
 
-  const authorLine = lines.find(line => line.trim().startsWith('By Dr.'));
-  if (authorLine) {
-    topMatter.author = authorLine.trim();
-  }
-
-  if (!topMatter.title) {
-    throw new Error(
-      'Could not automatically determine the post title. Check the document for a clear title at the top.',
-    );
-  }
-  return topMatter;
-}
-
-/**
- * A much more robust function to find and parse the SEO metadata block, wherever it is.
- */
-function parseSeoMetadata(rawText) {
-  const seoData = {};
-  const lines = rawText.split('\n');
-
-  // 1. Find the start of the SEO block
-  const seoBlockStartMarkers = ['SEO & Meta Details for Blog Post:', 'Meta Title:', 'Blog Post:'];
-  let seoBlockStartIndex = -1;
-
-  for (let i = 0; i < lines.length; i++) {
-    const trimmedLine = lines[i].trim();
-    if (seoBlockStartMarkers.some(marker => trimmedLine.startsWith(marker))) {
-      seoBlockStartIndex = i;
-      break;
-    }
-  }
-
-  if (seoBlockStartIndex === -1) {
-    throw new Error('Could not find the start of the SEO metadata block in the document.');
-  }
-
-  // 2. Parse only the lines within that block
-  const seoLines = lines.slice(seoBlockStartIndex);
-  let isParsingDescription = false;
-  let descriptionLines = [];
-
-  for (const line of seoLines) {
-    const trimmedLine = line.trim();
-    if (!trimmedLine) continue;
-
-    if (trimmedLine.startsWith('Meta Title:')) {
+    if (patterns.slug.test(trimmedLine)) {
       isParsingDescription = false;
-      seoData.metaTitle = trimmedLine.substring('Meta Title:'.length).trim();
-    } else if (trimmedLine.startsWith('Meta Description:')) {
+      data.slug = trimmedLine.replace(patterns.slug, '').trim();
+    } else if (patterns.metaTitle.test(trimmedLine)) {
+      isParsingDescription = false;
+      data.metaTitle = trimmedLine.replace(patterns.metaTitle, '').trim();
+    } else if (patterns.metaDescription.test(trimmedLine)) {
       isParsingDescription = true;
-      descriptionLines = [trimmedLine.substring('Meta Description:'.length).trim()];
-    } else if (
-      trimmedLine.startsWith('Slug:') ||
-      trimmedLine.startsWith('Slugx:') ||
-      trimmedLine.startsWith('URL Slug:')
-    ) {
+      descriptionLines = [trimmedLine.replace(patterns.metaDescription, '').trim()];
+    } else if (patterns.keywords.test(trimmedLine)) {
       isParsingDescription = false;
-      seoData.slug = trimmedLine.substring(trimmedLine.indexOf(':') + 1).trim();
-    } else if (trimmedLine.startsWith('Primary Keywords:')) {
-      isParsingDescription = false;
-      seoData.keywords = trimmedLine.substring('Primary Keywords:'.length).trim();
+      data.keywords = trimmedLine.replace(patterns.keywords, '').trim();
+    } else if (patterns.author.test(trimmedLine)) {
+      data.author = trimmedLine;
     } else if (isParsingDescription) {
-      // This line is part of a multi-line description
       descriptionLines.push(trimmedLine);
+    } else if (
+      !data.title &&
+      !patterns.author.test(trimmedLine) &&
+      !patterns.reviewed.test(trimmedLine) &&
+      !patterns.seoBlockStart.test(trimmedLine) &&
+      trimmedLine.length > 20 &&
+      !trimmedLine.includes(':')
+    ) {
+      data.title = trimmedLine;
     }
   }
 
   if (descriptionLines.length > 0) {
-    seoData.metaDescription = descriptionLines.join(' ');
+    data.metaDescription = descriptionLines.join(' ').trim();
   }
 
-  if (!seoData.slug || !seoData.metaTitle) {
-    throw new Error('Found the SEO block, but it is missing "Slug" and/or "Meta Title".');
+  if (!data.slug || !data.metaTitle) {
+    throw new Error(
+      `Failed to find required SEO fields. Found Slug: '${data.slug}', Meta Title: '${data.metaTitle}'. Check the document.`,
+    );
   }
-  return seoData;
+  if (!data.title) {
+    throw new Error('Failed to find a suitable title for the document.');
+  }
+
+  return data;
 }
 
 function postProcessHtml(html) {
@@ -120,61 +98,44 @@ export async function processDocxFile(filePath) {
   const rawTextResult = await mammoth.extractRawText({ path: filePath });
   const rawText = rawTextResult.value;
 
-  const topData = parseTopMatter(rawText);
-  const seoData = parseSeoMetadata(rawText);
-  const metadata = { ...topData, ...seoData };
+  const metadata = flexibleParser(rawText);
   const { title } = metadata;
 
   const htmlResult = await mammoth.convertToHtml({ path: filePath });
   let html = htmlResult.value;
 
-  const endMarkers = [
-    'Always consult your healthcare provider for personal medical concerns.',
-    'Okay, I have the full, updated blog post content.',
-    '[Discover All Medicly Telehealth Services Here!]',
-    '✅ SEO & Meta Data for:',
-    'Blog Post: How to Quickly Obtain an Online Medical Certificate',
-    'Meta Title:',
-  ];
-
+  // Find start of content (after title)
   let contentStartIndex = html.indexOf(title);
   if (contentStartIndex !== -1) {
-    const closingTagIndex = html.indexOf('</', contentStartIndex + title.length);
-    if (closingTagIndex !== -1) {
-      const endOfClosingTag = html.indexOf('>', closingTagIndex);
-      if (endOfClosingTag !== -1) {
-        contentStartIndex = endOfClosingTag + 1;
-      }
-    }
+    const endOfTitleTag = html.indexOf('>', contentStartIndex);
+    if (endOfTitleTag !== -1) contentStartIndex = endOfTitleTag + 1;
   } else {
-    throw new Error('Could not find the start of the content after the title.');
+    throw new Error('Could not find title in HTML to determine content start.');
   }
 
-  let content = '';
-  for (const marker of endMarkers) {
-    const contentEndIndex = html.lastIndexOf(marker);
-    if (contentEndIndex > contentStartIndex) {
-      const openingTagIndex = html.lastIndexOf('<', contentEndIndex);
-      if (openingTagIndex !== -1) {
-        content = html.substring(contentStartIndex, openingTagIndex).trim();
-        break;
-      }
+  // Find end of content (before SEO block)
+  const seoBlockMarkers = ['Meta Title:', 'SEO & Meta Details', 'Blog Post:'];
+  let contentEndIndex = -1;
+
+  for (const marker of seoBlockMarkers) {
+    const markerIndex = html.lastIndexOf(marker);
+    if (markerIndex > contentStartIndex) {
+      contentEndIndex = markerIndex;
+      break;
     }
   }
+
+  if (contentEndIndex !== -1) {
+    const openingTagIndex = html.lastIndexOf('<', contentEndIndex);
+    if (openingTagIndex !== -1) {
+      html = html.substring(0, openingTagIndex);
+    }
+  }
+
+  let content = html.substring(contentStartIndex).trim();
 
   if (!content) {
-    // Fallback if no end marker is found, which can happen in some docs.
-    // We will clean out the known SEO block from the HTML.
-    const seoBlockHtmlStart = html.indexOf('Meta Title:');
-    if (seoBlockHtmlStart > contentStartIndex) {
-      const openingTagIndex = html.lastIndexOf('<', seoBlockHtmlStart);
-      if (openingTagIndex !== -1) {
-        content = html.substring(contentStartIndex, openingTagIndex).trim();
-      }
-    }
-    if (!content) {
-      throw new Error('Could not determine content boundaries. No known end pattern matched.');
-    }
+    throw new Error('Could not extract the main content from the document.');
   }
 
   const processedContent = postProcessHtml(content);
